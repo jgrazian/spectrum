@@ -1,5 +1,9 @@
-use std::error::Error;
+use std::{error::Error, num::NonZeroU64};
 
+use wgpu::{
+    util::{BufferInitDescriptor, DeviceExt},
+    BufferBinding, PipelineLayoutDescriptor, ShaderStages,
+};
 use winit::{
     event::WindowEvent,
     event::*,
@@ -73,6 +77,8 @@ struct State<'a> {
     size: winit::dpi::PhysicalSize<u32>,
     window: &'a Window,
     render_pipeline: wgpu::RenderPipeline,
+    output_textures: [wgpu::Texture; 2],
+    bind_groups: [wgpu::BindGroup; 2],
 }
 
 impl<'a> State<'a> {
@@ -140,6 +146,115 @@ impl<'a> State<'a> {
             desired_maximum_frame_latency: 2,
         };
 
+        let bind_group_layout_desc = wgpu::BindGroupLayoutDescriptor {
+            label: Some("bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::COMPUTE | ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::COMPUTE | ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        };
+        let bind_group_layout = device.create_bind_group_layout(&bind_group_layout_desc);
+
+        // 1byte * 4 channels * width * height
+        let image_size = size.width as usize * size.height as usize * 4 * 4;
+        let output_textures = [
+            device.create_texture_with_data(
+                &queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("image texture 1"),
+                    size: wgpu::Extent3d {
+                        width: size.width,
+                        height: size.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[wgpu::TextureFormat::Bgra8UnormSrgb],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &vec![255; image_size],
+            ),
+            device.create_texture_with_data(
+                &queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("image texture 2"),
+                    size: wgpu::Extent3d {
+                        width: size.width,
+                        height: size.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[wgpu::TextureFormat::Bgra8UnormSrgb],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &vec![128; image_size],
+            ),
+        ];
+        let texture_view_1 = output_textures[0].create_view(&wgpu::TextureViewDescriptor {
+            format: Some(wgpu::TextureFormat::Bgra8UnormSrgb),
+            ..wgpu::TextureViewDescriptor::default()
+        });
+        let texture_view_2 = output_textures[1].create_view(&wgpu::TextureViewDescriptor {
+            format: Some(wgpu::TextureFormat::Bgra8UnormSrgb),
+            ..wgpu::TextureViewDescriptor::default()
+        });
+
+        let bind_groups = [
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bind group"),
+                layout: &bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&texture_view_1),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&texture_view_2),
+                    },
+                ],
+            }),
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bind group"),
+                layout: &bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&texture_view_2),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&texture_view_1),
+                    },
+                ],
+            }),
+        ];
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("wgsl/render.wgsl").into()),
@@ -147,7 +262,7 @@ impl<'a> State<'a> {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&bind_group_layout],
                 push_constant_ranges: &[],
             });
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -155,16 +270,14 @@ impl<'a> State<'a> {
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vert_main", // 1.
-                buffers: &[],             // 2.
+                entry_point: "vert_main",
+                buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                // 3.
                 module: &shader,
                 entry_point: "frag_main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    // 4.
                     format: config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
@@ -172,9 +285,9 @@ impl<'a> State<'a> {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList, // 1.
+                topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw, // 2.
+                front_face: wgpu::FrontFace::Ccw,
                 cull_mode: Some(wgpu::Face::Back),
                 // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
                 polygon_mode: wgpu::PolygonMode::Fill,
@@ -183,14 +296,14 @@ impl<'a> State<'a> {
                 // Requires Features::CONSERVATIVE_RASTERIZATION
                 conservative: false,
             },
-            depth_stencil: None, // 1.
+            depth_stencil: None,
             multisample: wgpu::MultisampleState {
-                count: 1,                         // 2.
-                mask: !0,                         // 3.
-                alpha_to_coverage_enabled: false, // 4.
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
             },
-            multiview: None, // 5.
-            cache: None,     // 6.
+            multiview: None,
+            cache: None,
         });
 
         Self {
@@ -201,6 +314,8 @@ impl<'a> State<'a> {
             config,
             size,
             render_pipeline,
+            output_textures,
+            bind_groups,
         }
     }
 
@@ -256,6 +371,7 @@ impl<'a> State<'a> {
                 timestamp_writes: None,
             });
 
+            render_pass.set_bind_group(0, &self.bind_groups[0], &[]);
             // Draw our 3 vertex. These are the only 3 we will need.
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.draw(0..3, 0..1);
@@ -268,3 +384,85 @@ impl<'a> State<'a> {
         Ok(())
     }
 }
+
+// fn make_render_textures(
+//     device: &wgpu::Device,
+//     size: &winit::dpi::PhysicalSize<u32>,
+// ) -> ([wgpu::Texture; 2], [wgpu::TextureView; 2]) {
+//     let textures = [
+//         device.create_texture(&wgpu::TextureDescriptor {
+//             label: Some("Image"),
+//             size: wgpu::Extent3d {
+//                 width: size.width,
+//                 height: size.height,
+//                 depth_or_array_layers: 1,
+//             },
+//             mip_level_count: 1,
+//             sample_count: 1,
+//             dimension: wgpu::TextureDimension::D2,
+//             format: wgpu::TextureFormat::Rgba32Float,
+//             usage: wgpu::TextureUsage::STORAGE
+//                 | wgpu::TextureUsage::COPY_DST
+//                 | wgpu::TextureUsage::COPY_SRC,
+//         }),
+//         device.create_texture(&wgpu::TextureDescriptor {
+//             label: Some("Image"),
+//             size: wgpu::Extent3d {
+//                 width: size.width,
+//                 height: size.height,
+//                 depth_or_array_layers: 1,
+//             },
+//             mip_level_count: 1,
+//             sample_count: 1,
+//             dimension: wgpu::TextureDimension::D2,
+//             format: wgpu::TextureFormat::Rgba32Float,
+//             usage: wgpu::TextureUsage::STORAGE
+//                 | wgpu::TextureUsage::COPY_DST
+//                 | wgpu::TextureUsage::COPY_SRC,
+//         }),
+//     ];
+//     let texture_views = [
+//         textures[0].create_view(&wgpu::TextureViewDescriptor::default()),
+//         textures[1].create_view(&wgpu::TextureViewDescriptor::default()),
+//     ];
+
+//     (textures, texture_views)
+// }
+
+// fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+//     self.size = new_size;
+//     self.sc_desc.width = new_size.width;
+//     self.sc_desc.height = new_size.height;
+//     self.swap_chain = self.device.create_swap_chain(&self.surface, &self.sc_desc);
+
+//     let new_texture_data = Self::make_render_textures(&self.device, &self.size);
+//     self.render_data.render_textures = new_texture_data.0;
+//     self.render_data.render_texture_views = new_texture_data.1;
+
+//     self.render_data.render_bind_groups = [
+//         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+//             label: Some("render_bind_group_0"),
+//             layout: &self.render_data.render_bind_group_layout,
+//             entries: &[wgpu::BindGroupEntry {
+//                 binding: 0,
+//                 resource: wgpu::BindingResource::TextureView(
+//                     &self.render_data.render_texture_views[0],
+//                 ),
+//             }],
+//         }),
+//         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+//             label: Some("render_bind_group_1"),
+//             layout: &self.render_data.render_bind_group_layout,
+//             entries: &[wgpu::BindGroupEntry {
+//                 binding: 0,
+//                 resource: wgpu::BindingResource::TextureView(
+//                     &self.render_data.render_texture_views[1],
+//                 ),
+//             }],
+//         }),
+//     ];
+
+//     // self.renderer =
+//     //     ProgressiveRenderer::new(self.size.width as usize, self.size.height as usize, 5);
+//     self.renderer = ParallelRenderer::new(self.size.width as usize, self.size.height as usize, 5);
+// }

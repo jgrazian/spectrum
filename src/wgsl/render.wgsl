@@ -10,12 +10,12 @@ fn vert_main(@builtin(vertex_index) in_vertex_index: u32) -> @builtin(position) 
     return vec4<f32>(x, y, 0.0, 1.0);
 }
 
-// [[group(0), binding(0)]] 
-// var in_texture: [[access(read)]] texture_storage_2d<rgba32float>;
+@group(0) @binding(0)
+var in_texture: texture_2d<f32>;
 
 @fragment
 fn frag_main(@builtin(position) coord_in: vec4<f32>) -> @location(0) vec4<f32> {
-    // let pixel_color = textureLoad(in_texture, vec2<i32>(coord_in.xy));
-    // return pixel_color;
-    return vec4<f32>(coord_in.x, coord_in.y, 0.1, 1.0);
+    let pixel_color = textureLoad(in_texture, vec2<u32>(coord_in.xy), 0);
+    return pixel_color;
+    // return vec4<f32>(coord_in.x, coord_in.y, 0.1, 1.0);
 }
