@@ -1,7 +1,10 @@
-use std::error::Error;
+use anyhow::Result;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::wasm_bindgen;
 
 use spectrum::run;
 
-fn main() -> Result<(), Box<dyn Error>> {
-    pollster::block_on(run())
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(main))]
+fn main() -> Result<()> {
+    run()
 }
